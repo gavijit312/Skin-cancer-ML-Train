@@ -160,7 +160,7 @@ def build_model(num_classes, size=224):
 def main():
     set_seed(42)
 
-    root = Path("archive (1)")
+    root = Path("dataset")
     samples, class_names = load_samples(root)
 
     train, val, test = stratified_split(samples)
@@ -187,7 +187,7 @@ def main():
     ]
 
     print("\n🔥 Phase 1 Training")
-    model.fit(train_ds, validation_data=val_ds, epochs=10, callbacks=callbacks)
+    model.fit(train_ds, validation_data=val_ds, epochs=20, callbacks=callbacks)
 
     # Phase 2 (fine-tuning)
     print("\n🔥 Phase 2 Fine-Tuning")
@@ -202,7 +202,7 @@ def main():
         metrics=["accuracy"]
     )
 
-    model.fit(train_ds, validation_data=val_ds, epochs=10, callbacks=callbacks)
+    model.fit(train_ds, validation_data=val_ds, epochs=20, callbacks=callbacks)
 
     # Test
     model = tf.keras.models.load_model("best_model.keras")
