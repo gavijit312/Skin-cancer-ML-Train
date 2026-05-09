@@ -94,3 +94,20 @@ htmlcov/
 .env
 .env.local
 dataset/
+
+# Dataset images and masks (do not upload image data)
+train/
+val/
+images/
+masks/
+
+# Common image file types
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.bmp
+*.gif
+*.heic
+*.webp
