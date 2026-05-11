@@ -91,6 +91,35 @@ def compute_class_weights(samples, num_classes):
     return weights
 
 
+def get_sparse_categorical_loss(label_smoothing=0.0):
+    """Return a SparseCategoricalCrossentropy loss with label smoothing when
+    supported by the installed TensorFlow; otherwise provide a compatible
+    fallback implementation that applies label smoothing to one-hot targets.
+    """
+    try:
+        return tf.keras.losses.SparseCategoricalCrossentropy(label_smoothing=label_smoothing)
+    except TypeError:
+        class SparseCEWithLabelSmoothing(tf.keras.losses.Loss):
+            def __init__(self, label_smoothing=label_smoothing, name="sparse_ce_with_label_smoothing"):
+                super().__init__(name=name)
+                self.label_smoothing = float(label_smoothing)
+
+            def call(self, y_true, y_pred):
+                # Ensure y_true is integer IDs shaped [batch]
+                y_true = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
+                num_classes = tf.shape(y_pred)[-1]
+                y_true_one_hot = tf.one_hot(y_true, depth=num_classes)
+
+                if self.label_smoothing > 0.0:
+                    ls = self.label_smoothing
+                    y_true_one_hot = y_true_one_hot * (1.0 - ls) + ls / tf.cast(num_classes, tf.float32)
+
+                # y_pred is expected to be probabilities (model uses softmax)
+                return tf.keras.losses.categorical_crossentropy(y_true_one_hot, y_pred, from_logits=False)
+
+        return SparseCEWithLabelSmoothing()
+
+
 # ------------------ IMAGE + MASK ------------------
 def load_image_with_mask(img_path, mask_path, size, training=False):
     """
@@ -120,7 +149,7 @@ def load_image_with_mask(img_path, mask_path, size, training=False):
         return tf.ones((size, size, 1), dtype=tf.float32)
 
     mask = tf.cond(mask_path != "", load_mask, default_mask)
-    img  = tf.cast(img, tf.float32) * mask        # background zeroed, [0, 255]
+    img  = tf.cast(img, tf.float32)       # background zeroed, [0, 255]
 
     # 3. Augment BEFORE preprocess_input (values still in [0, 255])
     if training:
@@ -148,7 +177,6 @@ def augment(img):
     img = tf.image.random_brightness(img, max_delta=0.15)
     img = tf.image.random_contrast(img, lower=0.8, upper=1.2)
     img = tf.image.random_saturation(img, lower=0.8, upper=1.2)
-    img = tf.image.random_hue(img, max_delta=0.05)
 
     # Random zoom via crop-and-resize
     size      = tf.shape(img)[0]
@@ -165,22 +193,20 @@ def augment(img):
 
 
 def make_dataset(samples, size=224, batch=32, training=True):
-    img_paths   = [str(s.image_path)       for s in samples]
-    mask_paths  = [str(s.mask_path)        for s in samples]
-    mask_exists = [s.mask_path.exists()    for s in samples]
-    labels      = [s.label                 for s in samples]
+    img_paths = [str(s.image_path) for s in samples]
+    labels    = [s.label              for s in samples]
 
+    # Disable mask usage: don't pass mask paths or existence flags.
     ds = tf.data.Dataset.from_tensor_slices(
-        (img_paths, mask_paths, mask_exists, labels)
+        (img_paths, labels)
     )
 
     if training:
         ds = ds.shuffle(len(samples), reshuffle_each_iteration=True)
 
-    def process(img_p, mask_p, has_mask, label):
-        mask_p = tf.cond(has_mask, lambda: mask_p, lambda: "")
-        # Pass training flag so augmentation only happens on train set
-        img = load_image_with_mask(img_p, mask_p, size, training=training)
+    def process(img_p, label):
+        # Pass empty mask path to disable masks inside loader
+        img = load_image_with_mask(img_p, tf.constant(""), size, training=training)
         return img, label
 
     ds = ds.map(process, num_parallel_calls=tf.data.AUTOTUNE)
@@ -212,7 +238,7 @@ def build_model(num_classes, size=224):
 
     # Block 1 — BatchNorm → Dropout → Dense
     x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.Dropout(0.4)(x)
+    x = tf.keras.layers.Dropout(0.2)(x)
     x = tf.keras.layers.Dense(
         256, activation="relu",
         kernel_regularizer=tf.keras.regularizers.l2(1e-4)
@@ -220,7 +246,7 @@ def build_model(num_classes, size=224):
 
     # Block 2 — BatchNorm → Dropout → Dense
     x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dropout(0.2)(x)
     x = tf.keras.layers.Dense(
         128, activation="relu",
         kernel_regularizer=tf.keras.regularizers.l2(1e-4)
@@ -294,7 +320,7 @@ def main():
     model.compile(
         # Lower LR than original (1e-3 was too aggressive with frozen BN layers)
         optimizer=tf.keras.optimizers.Adam(3e-4),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+        loss=get_sparse_categorical_loss(label_smoothing=0.1),
         metrics=["accuracy"]
     )
     model.fit(
